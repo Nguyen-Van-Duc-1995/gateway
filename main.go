@@ -1,7 +1,7 @@
 package main
 
 import (
-	"fmt" // 👈 THÊM VÀO ĐÂY
+	"fmt"
 	"log"
 	"net/http"
 	"net/http/httputil"
@@ -121,18 +121,54 @@ func createWSHandler(backendURL string) http.HandlerFunc {
 		}
 	}
 }
+func reverseProxyRewrite(target, fromPrefix, toPrefix string) http.HandlerFunc {
+	return corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		log.Printf("🔄 HTTP Proxy: %s %s -> %s", r.Method, r.URL.Path, target)
+
+		targetURL, err := url.Parse(target)
+		if err != nil {
+			http.Error(w, "Bad target URL", http.StatusInternalServerError)
+			return
+		}
+
+		proxy := httputil.NewSingleHostReverseProxy(targetURL)
+		orig := proxy.Director
+
+		proxy.Director = func(req *http.Request) {
+			orig(req)
+			// /odoo  -> /proxy
+			// /odoo/... -> /proxy/...
+			if strings.HasPrefix(req.URL.Path, fromPrefix) {
+				req.URL.Path = strings.Replace(req.URL.Path, fromPrefix, toPrefix, 1)
+			}
+		}
+
+		proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+			log.Printf("❌ HTTP Proxy error: %v", err)
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			http.Error(w, "Backend service unavailable", http.StatusBadGateway)
+		}
+
+		proxy.ServeHTTP(w, r)
+	})
+}
 
 func main() {
 	// Health
 	http.HandleFunc("/health", corsMiddleware(healthCheck))
 
-	// ✅ Google verification route (THÊM 1 DÒNG DUY NHẤT)
+	// Google verify
 	http.HandleFunc("/google418121864bb557bd.html", googleVerifyHandler)
 
 	// Proxies
 	http.HandleFunc("/stock/", reverseProxy("http://localhost:8001"))
 	http.HandleFunc("/service-b/", reverseProxy("http://localhost:8002"))
 
+	// ✅ ODOO routes (PHẢI đặt trước ListenAndServe)
+	http.HandleFunc("/odoo", reverseProxyRewrite("http://localhost:8000", "/odoo", "/proxy"))
+	http.HandleFunc("/odoo/", reverseProxyRewrite("http://localhost:8000", "/odoo", "/proxy"))
+
+	// WS
 	wsHandler9999 := createWSHandler("http://localhost:9999")
 	wsHandler9998 := createWSHandler("http://localhost:9998")
 
@@ -142,6 +178,5 @@ func main() {
 	http.HandleFunc("/ws2/", wsHandler9998)
 
 	log.Println("🚀 API Gateway starting on http://0.0.0.0:8080")
-
 	log.Fatal(http.ListenAndServe("0.0.0.0:8080", nil))
 }
