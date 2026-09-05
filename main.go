@@ -54,6 +54,12 @@ func reverseProxy(target string) http.HandlerFunc {
 				req.URL.Path = strings.TrimPrefix(req.URL.Path, "/service-b")
 				log.Printf("🔀 Path rewritten: %s", req.URL.Path)
 			}
+
+			// Không rewrite /auth
+			// Ví dụ:
+			// /auth/register -> /auth/register
+			// /auth/login -> /auth/login
+			// /auth/verify-email -> /auth/verify-email
 		}
 
 		// Custom error handler
@@ -114,53 +120,154 @@ func healthCheck(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(`{"status": "healthy", "message": "API Gateway is running"}`))
+
+	_, _ = w.Write([]byte(`{
+		"status": "healthy",
+		"message": "API Gateway is running"
+	}`))
 }
 
 // ✅ WebSocket route handler với validation
 func createWSHandler(backendURL string) http.HandlerFunc {
 	wsProxy := websocketProxy(backendURL)
+
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Kiểm tra xem có phải WebSocket request không
-		if strings.Contains(strings.ToLower(r.Header.Get("Connection")), "upgrade") &&
+		if strings.Contains(
+			strings.ToLower(r.Header.Get("Connection")),
+			"upgrade",
+		) &&
 			strings.ToLower(r.Header.Get("Upgrade")) == "websocket" {
+
 			wsProxy(w, r)
+
 		} else {
 			// Nếu không phải WebSocket, trả về error thân thiện
 			w.Header().Set("Content-Type", "application/json")
-			http.Error(w, `{"error": "WebSocket upgrade required"}`, http.StatusBadRequest)
+
+			http.Error(
+				w,
+				`{"error": "WebSocket upgrade required"}`,
+				http.StatusBadRequest,
+			)
 		}
 	}
 }
 
 func main() {
 	// ✅ Health check endpoint
-	http.HandleFunc("/health", corsMiddleware(healthCheck))
+	http.HandleFunc(
+		"/health",
+		corsMiddleware(healthCheck),
+	)
 
 	// ✅ HTTP reverse proxy with CORS
-	http.HandleFunc("/stock/", reverseProxy("http://localhost:8001"))
-	http.HandleFunc("/service-b/", reverseProxy("http://localhost:8002"))
+	http.HandleFunc(
+		"/stock/",
+		reverseProxy("http://localhost:8001"),
+	)
+
+	http.HandleFunc(
+		"/service-b/",
+		reverseProxy("http://localhost:8002"),
+	)
+
+	// ✅ Auth service
+	//
+	// Flutter:
+	// POST http://localhost:8080/auth/register
+	// POST http://localhost:8080/auth/verify-email
+	// POST http://localhost:8080/auth/login
+	//
+	// Gateway sẽ forward nguyên path sang port 8003:
+	// /auth/register       -> http://localhost:8003/auth/register
+	// /auth/verify-email   -> http://localhost:8003/auth/verify-email
+	// /auth/login          -> http://localhost:8003/auth/login
+	http.HandleFunc(
+		"/auth/",
+		reverseProxy("http://localhost:8003"),
+	)
 
 	// ✅ WebSocket proxy handlers - SỬ DỤNG HTTP SCHEME
-	wsHandler9999 := createWSHandler("http://localhost:9999")
-	wsHandler9998 := createWSHandler("http://localhost:9998")
+	wsHandler9999 := createWSHandler(
+		"http://localhost:9999",
+	)
+
+	wsHandler9998 := createWSHandler(
+		"http://localhost:9998",
+	)
 
 	// ✅ WebSocket routes
-	http.HandleFunc("/ws", wsHandler9999)   // /ws -> port 9999
-	http.HandleFunc("/ws/", wsHandler9999)  // /ws/* -> port 9999
-	http.HandleFunc("/ws2", wsHandler9998)  // /ws2 -> port 9998
-	http.HandleFunc("/ws2/", wsHandler9998) // /ws2/* -> port 9998
+	http.HandleFunc(
+		"/ws",
+		wsHandler9999,
+	)
+
+	http.HandleFunc(
+		"/ws/",
+		wsHandler9999,
+	)
+
+	http.HandleFunc(
+		"/ws2",
+		wsHandler9998,
+	)
+
+	http.HandleFunc(
+		"/ws2/",
+		wsHandler9998,
+	)
 
 	// ✅ Logging thông tin khởi động
 	log.Println("🚀 API Gateway starting on http://0.0.0.0:8080")
 	log.Println("📊 Routes configured:")
-	log.Println("   📡 WebSocket: ws://localhost:8080/ws  -> http://localhost:9999/ws")
-	log.Println("   📡 WebSocket: ws://localhost:8080/ws2 -> http://localhost:9998/ws")
-	log.Println("   🌐 HTTP: http://localhost:8080/stock/* -> http://localhost:8001/*")
-	log.Println("   🌐 HTTP: http://localhost:8080/service-b/* -> http://localhost:8002/*")
-	log.Println("   🏥 Health: http://localhost:8080/health")
-	log.Println("🔐 CORS enabled for all origins")
+
+	log.Println(
+		"   📡 WebSocket: ws://localhost:8080/ws  -> http://localhost:9999/ws",
+	)
+
+	log.Println(
+		"   📡 WebSocket: ws://localhost:8080/ws2 -> http://localhost:9998/ws",
+	)
+
+	log.Println(
+		"   🌐 HTTP: http://localhost:8080/stock/* -> http://localhost:8001/*",
+	)
+
+	log.Println(
+		"   🌐 HTTP: http://localhost:8080/service-b/* -> http://localhost:8002/*",
+	)
+
+	// ✅ Auth routes
+	log.Println(
+		"   🔐 AUTH: http://localhost:8080/auth/* -> http://localhost:8003/auth/*",
+	)
+
+	log.Println(
+		"      POST /auth/register",
+	)
+
+	log.Println(
+		"      POST /auth/verify-email",
+	)
+
+	log.Println(
+		"      POST /auth/login",
+	)
+
+	log.Println(
+		"   🏥 Health: http://localhost:8080/health",
+	)
+
+	log.Println(
+		"🔐 CORS enabled for all origins",
+	)
 
 	// Bind to 0.0.0.0 để accept external connections
-	log.Fatal(http.ListenAndServe("0.0.0.0:8080", nil))
+	log.Fatal(
+		http.ListenAndServe(
+			"0.0.0.0:8080",
+			nil,
+		),
+	)
 }
